@@ -1,0 +1,375 @@
+---
+title: "Investigating the consequences of increased T cell infiltration on Uveal Melanoma tumor samples"
+author: "James Swift"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+### Prerequisites
+
+```{r Libraries, echo = FALSE, warning = FALSE, results = FALSE, message = FALSE}
+library(tidyverse)
+library(survival)
+library(survminer)
+library(ggsurvfit)
+library(DESeq2)
+library(DT)
+library(tinytex)
+```
+
+```{r Plot theme, echo = FALSE, warning = FALSE, results = FALSE, message = FALSE}
+custom_theme <- theme(
+  panel.border = element_blank(),
+  axis.line = element_line(color = "black"),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  panel.background = element_blank(),
+  axis.title = element_text(size = 12),
+  axis.text = element_text(size = 10),
+  strip.text.x = element_text(size = 10),
+  legend.text = element_text(size = 12),
+  legend.title = element_text(size = 10),
+  legend.position = "top",
+  legend.direction = "horizontal",
+  axis.text.x = element_text(angle = 45, hjust = 1)
+)
+```
+
+### Data import & tidying
+
+```{r Lists}
+T_cell_genes_conventional <- c("SAMD9", "RTP4", "IFIH1", "DDX60", 
+                      "IFI27", "ISG20", "PARP14", "PARP12", 
+                      "IFIT5", "IRF9", "EPSTI1", "OAS1", 
+                      "IFNG", "CXCL9", "CXCL10", "GZMB", 
+                      "PRF1", "PMEL", "TYRP1", "TAP1", 
+                      "TAP2", "PSMB8", "HLA-A", "HLA-B", 
+                      "HLA-C", "SAMD9", "RTP4", "IFIH1", "DDX60", "IFI27", "ISG20", "PARP14",  
+                      "PARP12", "IFIT5", "IRF9", "EPSTI1", "OAS1", "IFNG", "CXCL9",  
+                      "CXCL10", "CD4", "LTB", "IL7R", "KLF4", "IRF8", "BATF3",  
+                      "CD2", "BTLA", "CLEC9A", "ID2", "CD141", "CD3D", "CD3E",   
+                      "PTPRC", "PRF1", "PDCD1", "TNFRSF18", "HAVCR2", "CD40", "CD274",  
+                      "LAG3", "VTCN1", "TNFRSF9", "IL2RB", "IDO1", "TNFRSF4", "CTLA4",  
+                      "PDCD1LG2", "ICOS", "CD276", "CXCL8", "UBA7", "GBP1", "GBP2",   
+                      "GBP3", "CD8A")
+
+T_cell_genes_unconventional <- c("TRAV1-1", "TRAV2", "TRAV3", "TRGV9",
+                                 "TRDV1", "TRDV2", "TRDV3", "CD1C",
+                                 "CD1A", "BTNL2", "BTN3A1","BTN1A1",
+                                 "BTN2A2", "BTN3A3", "BTN2A1", "BTN3A2", 
+                                 "BTNL3", "BTNL8", "BTNL9", "BTN2A3P",
+                                 "BTNL10", "BTN1A1P1", "CD1D", "CD1B",
+                                 "KLRB1", "CCL3", "CCL4", "PRDM1", "TRDC")
+
+T_cell_genes_all <- c(T_cell_genes_conventional, T_cell_genes_unconventional)
+```
+
+```{r Loading data, class.source = 'fold-hide', message = FALSE}
+clinical_df <- readRDS("/srv/shiny-server/tcga-2022-dev/data/output/clinical.rds") #for survival
+
+meta_samp <- read_tsv("/srv/shiny-server/tcga-2022-dev/data/output/merged_samp_sheet.tsv") %>% 
+  arrange("File Name") %>%
+  filter(!duplicated(`Sample ID`))
+
+data <- readRDS("/srv/shiny-server/tcga-2022-dev/data/output/log2fpkm_uq.rds")
+
+significant_expression <- readRDS(file = "~/Documents/exploratory_analysis/data/output/expression_mean.rds") %>% 
+  filter(a >= 1) %>% #filters out noise
+  pull(GeneID)
+
+pval_data <- readRDS(file = "~/Documents/exploratory_analysis/data/output/survival-pval.RDS") %>% 
+  as_tibble() %>% 
+  filter(gene %in% significant_expression) %>%
+  select(pval, gene, project) %>% 
+  mutate(pval = as.double(pval))
+
+hazard_data <- readRDS(file = "~/Documents/exploratory_analysis/data/output/survival-hazard.RDS") %>% 
+  as_tibble() %>% 
+  filter(gene %in% significant_expression) %>% 
+  rename("value" = "hazard")
+
+pval_hazard_df <- left_join(pval_data, hazard_data) %>% 
+  select(gene, project, pval, hazard) %>% 
+  arrange(-hazard, pval)
+```
+
+### Increased T cell infiltration has a negative impact on overall survival in some pathologies
+#### Red line indicates a significance (p-value) of 0.01
+
+UVM and LGG show a negative correlation between overall survival and T cell infiltration. KIRC and THYM show a similar pattern, but have considerably fewer data points.
+
+Both UVM and LGG pathologies occur in immunopriviledged areas.
+
+```{r Indication plots, class.source = 'fold-hide'}
+plot_by_indication <- pval_hazard_df %>% 
+  filter(gene %in% T_cell_genes_all) %>% 
+  filter(pval <= 0.1) %>% 
+  filter(hazard < 1) %>%
+  ggplot(aes(
+    x = project,
+    y = pval
+  )) +
+  geom_boxplot() +
+  scale_y_reverse() +
+  geom_jitter() + 
+  scale_fill_manual(values=c("red","green","blue")) +
+  guides(colour = guide_legend(nrow = 1)) +
+  labs(
+    x = "Indication",
+    y = "P-value",
+    title = "Cancer pathologies with negative hazard ratio for T cell infiltration",
+    subtitle = "Horizontal line at 0.01"
+  ) +
+  custom_theme +
+  geom_hline(yintercept = 0.01, linewidth = 1, color = "red")
+```
+
+```{r, echo = FALSE}
+plot_by_indication
+```
+
+### T cell gene expression grouped by hazard ratio
+
+```{r Sliced expression for UVM and LGG - High hazard}
+positive_hazard_df <- pval_hazard_df %>% 
+  filter(gene %in% T_cell_genes_all) %>% 
+  arrange(-hazard, pval) %>% 
+  filter(project %in% c("TCGA-UVM", "TCGA-LGG")) %>% 
+  filter(pval <= 0.05) 
+
+positive_hazard_df <- positive_hazard_df %>% mutate(facet = if_else(positive_hazard_df$hazard > 3, "High positive hazard (HR > 3)", "Low positive hazard (3 > HR >= 2)"))
+```
+
+```{r, class.source = 'fold-hide'}
+positive_hazard <- positive_hazard_df %>% 
+  ggplot(aes(
+    x = project,
+    y = pval, 
+    color = gene,
+  )) +
+  facet_grid(~facet) +
+  scale_y_reverse() +
+  geom_jitter() + 
+  geom_hline(yintercept = 0.01, color = "red", linewidth = 1) +
+  labs(
+    x = "Indication",
+    y = "P-value",
+  ) +
+  custom_theme +
+  theme(legend.position = "none")
+```
+
+```{r Sliced expression for UVM and LGG - Low hazard}
+negative_hazard_df <- pval_hazard_df %>% 
+  filter(gene %in% T_cell_genes_all) %>% 
+  arrange(hazard, pval) %>% 
+  filter(project %in% c("TCGA-UVM", "TCGA-LGG")) %>% 
+  filter(pval <= 0.05)
+
+negative_hazard_df <- negative_hazard_df %>% mutate(facet = if_else(negative_hazard_df$hazard < 0.333, "High negative hazard (HR < 0.333)", "Low negative hazard (0.333 < HR <= 1)"))
+```
+
+```{r, class.source = 'fold-hide'}
+negative_hazard <- negative_hazard_df %>% 
+  ggplot(aes(
+    x = project,
+    y = pval, 
+    color = gene,
+  )) +
+  facet_grid(~facet) +
+  scale_y_reverse() +
+  geom_jitter() + 
+  geom_hline(yintercept = 0.01, color = "red", linewidth = 1) +
+  labs(
+    x = "Indication",
+    y = "P-value",
+  ) +
+  custom_theme +
+  theme(legend.position = "none")
+```
+
+#### UVM shows a higher negative hazard ratio for more T cell genes than LGG
+
+```{r, fig.show='hold', out.width="50%", echo = FALSE}
+negative_hazard
+positive_hazard
+```
+
+### T cell genes most strongly correlated with OS
+
+CD8A paradoxically shows to be highly negative correlated with overall survival.
+Meanwhile, CD40 is correlated positively with overall survival.
+
+```{R Finding genes associated with OS (UVM only)}
+gene_hazard_pval_table_uvm <- pval_hazard_df %>% 
+  filter(gene %in% T_cell_genes_all) %>% 
+  arrange(hazard, pval) %>% 
+  filter(project == "TCGA-UVM") %>%
+  select(!project) %>% 
+  filter(pval <= 0.05) %>% 
+  mutate("pval" = format(round(pval, 5), nsmall = 5)) %>% 
+  mutate("hazard" = format(round(hazard, 5), nsmall = 5)) %>% 
+  datatable()
+
+gene_hazard_pval_table_uvm
+```
+
+```{r Tidying data, message = FALSE}
+data <- readRDS("/srv/shiny-server/tcga-2022-dev/data/output/unstranded.rds") # obviosuly this isn't the right data
+
+meta_samp <- read_tsv("/srv/shiny-server/tcga-2022-dev/data/output/merged_samp_sheet.tsv") %>% 
+  arrange("File Name") %>%
+  filter(!duplicated(`Sample ID`)) %>% 
+  filter(`Project ID` == "TCGA-UVM")
+
+clinical_df <- readRDS("/srv/shiny-server/tcga-2022-dev/data/output/clinical.rds") %>%
+  filter(submitter_id %in% meta_samp$`Case ID`) %>%
+  filter(!duplicated(submitter_id)) %>% 
+  filter(!is.na(time)) %>% 
+  filter(time > -1) %>%
+  rename("vital_status" = "survival") %>% 
+  mutate(survival = ifelse(survival == 1, "dead", "alive")) %>% 
+  rename("submitter_id" = "Case ID") %>% 
+  select(`Case ID`, survival)
+
+meta_samp <- meta_samp %>% 
+  filter(`Case ID` %in% clinical_df$`Case ID`) %>% 
+  left_join(clinical_df, by = "Case ID")
+
+count_data <- data %>% 
+  select(colnames(data)[1],
+         meta_samp$`Sample ID`) %>% 
+  filter(!duplicated(GeneID)) %>% # why were these even duplicated in the first place, and does this mean anything for tcga-app
+  column_to_rownames(var = "GeneID") %>% 
+  as.matrix()
+```
+
+```{r DEseq2, message = FALSE, warning = FALSE, comment = FALSE, results = "hide"}
+dds <- DESeqDataSetFromMatrix(countData = count_data,
+                              colData = meta_samp,
+                              design = ~ survival)
+
+dds <- DESeq(dds, betaPrior = FALSE, parallel = T)
+
+res <- lfcShrink(dds, contrast = c("survival", "dead", "alive"), type = "normal")
+
+deseq2_df <- res %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "GeneID")
+```
+
+```{r Plot (immune genes), echo = FALSE, message = FALSE, warning = FALSE, comment = FALSE}
+deg_T_cell_plot <- deseq2_df %>%
+  filter(GeneID %in% T_cell_genes_all) %>% 
+  ggplot(aes(x = log2FoldChange, y = -log2(padj), label = GeneID)) +
+  geom_point(col = "light blue") +
+  geom_text(check_overlap = TRUE, size = 3, vjust = 0, nudge_y = 0.2) +
+  geom_vline(xintercept = c(-0.5, 0.5), col = "red") +
+  geom_hline(yintercept = -log2(0.05), col = "red") +
+  xlim(-2, 2) +
+  theme_classic() 
+
+deg_T_cell_plot
+```
+
+### Function of genes correlated with OS
+#### CD40
+
+- Member of the TNF-receptor superfamily
+- Receptor on antigen-presenting cells
+- T cell-dependent Ig class switching
+
+#### CD8A
+
+- Classic T cell stuff
+
+#### IL2Rb
+
+- Binds IL2
+- Required for Treg activation
+- Required for Th2 activation
+
+#### LAG3
+
+- Associates with CD3-TCR in immunological synapse and directly inhibits T cell activation, other mechanisms
+
+#### GBP/2
+
+- GTPase, expression is induced by interferon
+
+#### IRF1
+
+- Stimulates immune response against tumour cells
+- Supresses tumour cell growth
+
+#### PTPRC
+
+- Regulation of T cell antigen receptor signalling
+
+#### HAVCR2 
+
+- Th1 cell surface protein that regulates macrophage activation
+- Promotes a tolerogenic immune state
+
+#### OAS1
+
+- Activates RNase L leading to degradation of cellular RNA
+
+### <Insert survival curves for above genes>
+
+
+### Why does increased T cell infiltration in Uveal Melanoma cases cause decreased overall survival?
+
+One the theory suggests that this effect is not a direct result of the T cell infiltration, but rather as a result of the step that lead to increased T cell infiltration - i.e. cytokine release. I t has been found that tissues in uveal melanoma express significant levels of IL-2 receptors (which I believe is usually just limiting to immune cells, but I need to check this). IL-2 has many functions, but importantly it leads to the activation (and thus proliferation) of certain subsets of T cells (Th1 and Tregs), which in turn may lead help in the activation of CD8 T cells, which explains the high expression levels found in UVM primary tumour samples. Crucially, IL-2 leads to proliferation of immune cells. Therefore, since tumour cells in uveal melanoma also expression IL-2 receptors, it has been hypothesized that increased IL-2 secretion locally within the tumour microenvironment, paradoxically leads to the proliferation of the tumour cells, rather than their destruction.
+
+### All genes correlated with OS
+
+```{R Finding associated with OS (all genes)}
+gene_hazard_pval_table_all <- pval_hazard_df %>% 
+  filter(project == "TCGA-UVM") %>% 
+  arrange(hazard, pval) %>%
+  filter(pval <= 0.05) %>% 
+  mutate("pval" = format(round(pval, 5), nsmall = 5)) %>% 
+  mutate("hazard" = format(round(hazard, 5), nsmall = 5)) %>% 
+  datatable()
+
+gene_hazard_pval_table_all
+```
+
+```{r Plot (all genes), echo = FALSE, message = FALSE, warning = FALSE, comment = FALSE}
+deg_all_plot <- deseq2_df %>% 
+  filter(padj < 0.05) %>% 
+  ggplot(aes(x = log2FoldChange, y = -log2(padj), label = GeneID)) +
+  geom_point(col = "light blue") +
+  geom_text(check_overlap = TRUE, size = 3, vjust = 0, nudge_y = 0.2) +
+  geom_vline(xintercept = c(-0.5, 0.5), col = "red") +
+  geom_hline(yintercept = -log2(0.05), col = "red") +
+  theme_classic() 
+
+deg_all_plot
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
